@@ -116,6 +116,9 @@ jobs:
           go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
           go-version: "1.26"
           cache: true
+          cache-dependency-path: |
+            core/src/foss/golang/go.sum
+            core/src/main/golang/go.sum
 
       - name: Synchronize Go module dependencies
         run: |
@@ -216,6 +219,9 @@ jobs:
           go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
           go-version: "1.26"
           cache: true
+          cache-dependency-path: |
+            core/src/foss/golang/go.sum
+            core/src/main/golang/go.sum
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v5
@@ -223,7 +229,8 @@ jobs:
       - name: Install Android native toolchain
         run: |
           set -euo pipefail
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" \
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;35.0.0" \
             "ndk;29.0.14206865" "cmake;3.22.1"
 
       - name: Apply CMFA Go runtime patches
