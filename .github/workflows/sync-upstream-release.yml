@@ -1,0 +1,344 @@
+name: Sync upstream and release special APK
+
+on:
+  schedule:
+    - cron: "23 */3 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sync-upstream-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: MetaCubeX/ClashMetaForAndroid
+  KERNEL_REPOSITORY: ztyawc/mihomo
+  PACKAGE_ID: com.github.metacubex.clash.ztyawc
+  KERNEL_PATH: core/src/foss/golang/clash
+
+jobs:
+  sync:
+    name: Synchronize sources
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      app_version: ${{ steps.release.outputs.app_version }}
+      kernel_sha: ${{ steps.release.outputs.kernel_sha }}
+      should_release: ${{ steps.release.outputs.should_release }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+      special_tag: ${{ steps.release.outputs.special_tag }}
+      upstream_tag: ${{ steps.release.outputs.upstream_tag }}
+    steps:
+      - name: Checkout special edition
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: false
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream and select latest custom kernel
+        run: |
+          set -euo pipefail
+
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          else
+            git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          fi
+          git fetch upstream main --tags
+
+          set +e
+          git merge --no-edit upstream/main
+          merge_status=$?
+          set -e
+
+          if [[ $merge_status -ne 0 ]]; then
+            while IFS= read -r conflicted_path; do
+              case "$conflicted_path" in
+                .gitmodules|"$KERNEL_PATH"|\
+                .github/workflows/build-debug.yaml|\
+                .github/workflows/build-pre-release.yaml|\
+                .github/workflows/build-release.yaml|\
+                .github/workflows/update-dependencies.yaml)
+                  ;;
+                *)
+                  echo "Manual merge required for: $conflicted_path" >&2
+                  exit 1
+                  ;;
+              esac
+            done < <(git diff --name-only --diff-filter=U)
+
+            if git diff --name-only --diff-filter=U | grep -Fxq .gitmodules; then
+              git checkout --ours -- .gitmodules
+            fi
+            git rm -f --ignore-unmatch \
+              .github/workflows/build-debug.yaml \
+              .github/workflows/build-pre-release.yaml \
+              .github/workflows/build-release.yaml \
+              .github/workflows/update-dependencies.yaml
+          fi
+
+          git config -f .gitmodules submodule.clash-foss.url \
+            "https://github.com/${KERNEL_REPOSITORY}"
+          git config -f .gitmodules submodule.clash-foss.branch main
+
+          kernel_sha="$(git ls-remote "https://github.com/${KERNEL_REPOSITORY}.git" \
+            refs/heads/main | awk '{print $1}')"
+          test -n "$kernel_sha"
+          git update-index --add --cacheinfo "160000,$kernel_sha,$KERNEL_PATH"
+          git submodule sync -- "$KERNEL_PATH"
+          git submodule update --init --force "$KERNEL_PATH"
+          git -C "$KERNEL_PATH" fetch origin +main:refs/remotes/origin/main
+          git -C "$KERNEL_PATH" checkout --detach "$kernel_sha"
+
+          git add .gitmodules "$KERNEL_PATH"
+          if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
+              git diff --name-only --diff-filter=U >&2
+              exit 1
+            fi
+            git commit --no-edit
+          fi
+
+          echo "KERNEL_SHA=$kernel_sha" >> "$GITHUB_ENV"
+          echo "KERNEL_SHORT_SHA=${kernel_sha:0:12}" >> "$GITHUB_ENV"
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
+          go-version: "1.26"
+          cache: true
+
+      - name: Synchronize Go module dependencies
+        run: |
+          set -euo pipefail
+          go install github.com/metacubex/update-go-mod-replace@latest
+
+          pushd core/src/foss/golang >/dev/null
+          update-go-mod-replace "$GITHUB_WORKSPACE/$KERNEL_PATH/go.mod" "$PWD/go.mod"
+          go mod tidy
+          popd >/dev/null
+
+          pushd core/src/main/golang >/dev/null
+          update-go-mod-replace "$GITHUB_WORKSPACE/$KERNEL_PATH/go.mod" "$PWD/go.mod"
+          go mod tidy
+          popd >/dev/null
+
+      - name: Commit synchronized custom kernel
+        run: |
+          set -euo pipefail
+          git add .gitmodules "$KERNEL_PATH" \
+            core/src/foss/golang/go.mod core/src/foss/golang/go.sum \
+            core/src/main/golang/go.mod core/src/main/golang/go.sum
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update ztyawc mihomo to ${KERNEL_SHORT_SHA}"
+          fi
+
+      - name: Push synchronized sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git push origin HEAD:main
+
+      - name: Determine whether a release is required
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          upstream_tag="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq .tag_name)"
+          app_version="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' \
+            build.gradle.kts | head -n1)"
+          special_tag="special-${upstream_tag}"
+          source_sha="$(git rev-parse HEAD)"
+          should_release=true
+
+          if [[ "v${app_version}" != "$upstream_tag" ]]; then
+            echo "main is v${app_version}, latest stable release is ${upstream_tag}; sync only."
+            should_release=false
+          elif gh release view "$special_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$special_tag is already published; sync only."
+            should_release=false
+          fi
+
+          {
+            echo "app_version=$app_version"
+            echo "kernel_sha=$KERNEL_SHA"
+            echo "should_release=$should_release"
+            echo "source_sha=$source_sha"
+            echo "special_tag=$special_tag"
+            echo "upstream_tag=$upstream_tag"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and verify unsigned arm64 APK
+    needs: sync
+    if: needs.sync.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout synchronized source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.sync.outputs.source_sha }}
+          submodules: false
+
+      - name: Checkout custom kernel
+        run: |
+          set -euo pipefail
+          git submodule sync -- "$KERNEL_PATH"
+          git submodule update --init --force "$KERNEL_PATH"
+          git -C "$KERNEL_PATH" fetch origin +main:refs/remotes/origin/main
+          test "$(git -C "$KERNEL_PATH" rev-parse HEAD)" = "${{ needs.sync.outputs.kernel_sha }}"
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
+          go-version: "1.26"
+          cache: true
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Install Android native toolchain
+        run: |
+          set -euo pipefail
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" \
+            "ndk;29.0.14206865" "cmake;3.22.1"
+
+      - name: Apply CMFA Go runtime patches
+        run: |
+          set -euo pipefail
+          for patch_file in "$GITHUB_WORKSPACE"/.github/patch/*.patch; do
+            patch --verbose -d "$(go env GOROOT)" -p1 < "$patch_file"
+          done
+
+      - name: Prepare reproducible build inputs
+        run: |
+          set -euo pipefail
+          cp -f /etc/ssl/certs/ca-certificates.crt \
+            "$KERNEL_PATH/component/ca/ca-certificates.crt"
+          {
+            echo "sdk.dir=${ANDROID_HOME}"
+            echo "custom.application.id=${PACKAGE_ID}"
+            echo "remove.suffix=true"
+          } > local.properties
+
+      - name: Test custom mihomo kernel
+        working-directory: core/src/foss/golang/clash
+        run: go test -tags with_gvisor ./transport/socks5 ./adapter/outbound
+
+      - name: Build unsigned arm64 Meta APK
+        run: >-
+          ./gradlew --no-daemon app:assembleMetaRelease
+          -Pandroid.injected.build.abi=arm64-v8a
+
+      - name: Verify and stage APK
+        run: |
+          set -euo pipefail
+          source_apk="$(find app/build -type f -path '*/apk/*' \
+            -name '*arm64-v8a*release-unsigned.apk' -print -quit)"
+          test -n "$source_apk"
+
+          aapt="$ANDROID_HOME/build-tools/35.0.0/aapt"
+          apksigner="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          "$aapt" dump badging "$source_apk" | grep -F "package: name='${PACKAGE_ID}'"
+          "$aapt" dump badging "$source_apk" | \
+            grep -F "application-label:'Clash Meta for Android（特供版）'"
+          test "$(unzip -Z1 "$source_apk" | awk -F/ '/^lib\// {print $2}' | sort -u)" = \
+            "arm64-v8a"
+          unzip -Z1 "$source_apk" | grep -Fx 'lib/arm64-v8a/libclash.so'
+          unzip -Z1 "$source_apk" | grep -Fx 'lib/arm64-v8a/libbridge.so'
+          kernel_short="${{ needs.sync.outputs.kernel_sha }}"
+          kernel_short="${kernel_short:0:7}"
+          unzip -p "$source_apk" lib/arm64-v8a/libbridge.so | strings | \
+            grep -F "$kernel_short"
+          if "$apksigner" verify --verbose "$source_apk"; then
+            echo "APK unexpectedly contains a signature" >&2
+            exit 1
+          fi
+          if unzip -Z1 "$source_apk" | grep -Eq '^META-INF/[^/]+\.(RSA|DSA|EC|SF)$'; then
+            echo "APK unexpectedly contains a JAR signature" >&2
+            exit 1
+          fi
+          unzip -t "$source_apk" >/dev/null
+
+          mkdir -p dist
+          output_apk="dist/CMFA-${{ needs.sync.outputs.app_version }}-ztyawc-special-arm64-v8a-unsigned.apk"
+          cp -f "$source_apk" "$output_apk"
+          sha256sum "$output_apk"
+
+      - name: Upload verified APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: CMFA-${{ needs.sync.outputs.app_version }}-ztyawc-special-arm64-v8a-unsigned
+          path: dist/*.apk
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish GitHub Release
+    needs:
+      - sync
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified APK
+        uses: actions/download-artifact@v8
+        with:
+          name: CMFA-${{ needs.sync.outputs.app_version }}-ztyawc-special-arm64-v8a-unsigned
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          apk_path="$(find dist -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$apk_path"
+          checksum="$(sha256sum "$apk_path" | awk '{print $1}')"
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "Clash Meta for Android（特供版）"
+            echo
+            echo "- CMFA 上游版本：\`${{ needs.sync.outputs.upstream_tag }}\`"
+            echo "- 魔改内核：\`${KERNEL_REPOSITORY}@${{ needs.sync.outputs.kernel_sha }}\`"
+            echo "- 包名：\`${PACKAGE_ID}\`"
+            echo "- ABI：\`arm64-v8a\`"
+            echo "- SHA-256：\`${checksum}\`"
+            echo
+            echo "> APK 未签名，必须自行签名后才能安装。"
+          } > "$notes_file"
+
+          if gh release view "${{ needs.sync.outputs.special_tag }}" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists; nothing to publish."
+            exit 0
+          fi
+          gh release create "${{ needs.sync.outputs.special_tag }}" "$apk_path" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "${{ needs.sync.outputs.source_sha }}" \
+            --title "CMFA 特供版 ${{ needs.sync.outputs.upstream_tag }}" \
+            --notes-file "$notes_file"

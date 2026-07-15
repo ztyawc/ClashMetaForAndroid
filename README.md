@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> 本分支是内置 `ztyawc/mihomo` 魔改内核的共存特供版。自动更新、未签名 APK 和安装说明见 [SPECIAL_EDITION.md](SPECIAL_EDITION.md)。
+
 ## Clash Meta for Android
 
 A Graphical user interface of [Clash.Meta](https://github.com/MetaCubeX/Clash.Meta) for Android

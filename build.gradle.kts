@@ -47,7 +47,8 @@ subprojects {
         defaultConfig {
             if (isApp) {
                 val customApplicationId = queryConfigProperty("custom.application.id") as? String?
-                applicationId = customApplicationId.takeIf { it?.isNotBlank() == true } ?: "com.github.metacubex.clash"
+                applicationId = customApplicationId.takeIf { it?.isNotBlank() == true }
+                    ?: "com.github.metacubex.clash.ztyawc"
             }
 
             project.name.let { name ->
@@ -96,7 +97,7 @@ subprojects {
         productFlavors {
             flavorDimensions("feature")
 
-            val removeSuffix = (queryConfigProperty("remove.suffix") as? String)?.toBoolean() == true
+            val removeSuffix = (queryConfigProperty("remove.suffix") as? String)?.toBoolean() ?: true
 
             create("alpha") {
                 isDefault = true
@@ -163,7 +164,7 @@ subprojects {
             named("release") {
                 isMinifyEnabled = isApp
                 isShrinkResources = isApp
-                signingConfig = signingConfigs.findByName("release") ?: signingConfigs["debug"]
+                signingConfig = signingConfigs.findByName("release")
                 proguardFiles(
                     getDefaultProguardFile("proguard-android-optimize.txt"),
                     "proguard-rules.pro"

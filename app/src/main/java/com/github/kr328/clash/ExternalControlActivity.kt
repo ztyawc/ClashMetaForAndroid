@@ -56,21 +56,24 @@ class ExternalControlActivity : Activity(), CoroutineScope by MainScope() {
                 return
             }
 
-            Intents.ACTION_TOGGLE_CLASH -> if(Remote.broadcasts.clashRunning) {
+            Intents.ACTION_TOGGLE_CLASH,
+            Intents.LEGACY_ACTION_TOGGLE_CLASH -> if(Remote.broadcasts.clashRunning) {
                 stopClash()
             }
             else {
                 startClash()
             }
 
-            Intents.ACTION_START_CLASH -> if(!Remote.broadcasts.clashRunning) {
+            Intents.ACTION_START_CLASH,
+            Intents.LEGACY_ACTION_START_CLASH -> if(!Remote.broadcasts.clashRunning) {
                 startClash()
             }
             else {
                 Toast.makeText(this, R.string.external_control_started, Toast.LENGTH_LONG).show()
             }
 
-            Intents.ACTION_STOP_CLASH -> if(Remote.broadcasts.clashRunning) {
+            Intents.ACTION_STOP_CLASH,
+            Intents.LEGACY_ACTION_STOP_CLASH -> if(Remote.broadcasts.clashRunning) {
                 stopClash()
             }
             else {

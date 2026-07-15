@@ -8,6 +8,9 @@ object Intents {
     val ACTION_START_CLASH = "$packageName.action.START_CLASH"
     val ACTION_STOP_CLASH = "$packageName.action.STOP_CLASH"
     val ACTION_TOGGLE_CLASH = "$packageName.action.TOGGLE_CLASH"
+    const val LEGACY_ACTION_START_CLASH = "com.github.metacubex.clash.meta.action.START_CLASH"
+    const val LEGACY_ACTION_STOP_CLASH = "com.github.metacubex.clash.meta.action.STOP_CLASH"
+    const val LEGACY_ACTION_TOGGLE_CLASH = "com.github.metacubex.clash.meta.action.TOGGLE_CLASH"
 
     const val EXTRA_NAME = "name"
 
