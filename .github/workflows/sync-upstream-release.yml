@@ -159,7 +159,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          upstream_tag="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq .tag_name)"
+          upstream_tag=""
+          for attempt in 1 2 3 4 5; do
+            candidate=""
+            if candidate="$(gh api \
+              "repos/${UPSTREAM_REPOSITORY}/releases/latest" \
+              --jq '.tag_name // empty')" && \
+              [[ "$candidate" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              upstream_tag="$candidate"
+              break
+            fi
+
+            echo "Latest upstream release lookup attempt ${attempt}/5 failed or returned an invalid tag." >&2
+            if (( attempt < 5 )); then
+              sleep $((attempt * 3))
+            fi
+          done
+          if [[ -z "$upstream_tag" ]]; then
+            echo "Unable to determine a valid latest upstream release after 5 attempts." >&2
+            exit 1
+          fi
+
           app_version="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' \
             build.gradle.kts | head -n1)"
           special_tag="special-${upstream_tag}"
@@ -169,9 +189,37 @@ jobs:
           if [[ "v${app_version}" != "$upstream_tag" ]]; then
             echo "main is v${app_version}, latest stable release is ${upstream_tag}; sync only."
             should_release=false
-          elif gh release view "$special_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "$special_tag is already published; sync only."
-            should_release=false
+          else
+            release_exists=false
+            release_error="$RUNNER_TEMP/release-lookup-error.txt"
+            for attempt in 1 2 3 4 5; do
+              release_candidate=""
+              if release_candidate="$(gh api \
+                "repos/${GITHUB_REPOSITORY}/releases/tags/${special_tag}" \
+                --jq '.tag_name // empty' 2>"$release_error")"; then
+                if [[ "$release_candidate" == "$special_tag" ]]; then
+                  release_exists=true
+                  break
+                fi
+                echo "Special release lookup attempt ${attempt}/5 returned an invalid tag." >&2
+              elif grep -Fq '(HTTP 404)' "$release_error"; then
+                break
+              else
+                echo "Special release lookup attempt ${attempt}/5 failed:" >&2
+                sed -n '1,5p' "$release_error" >&2
+              fi
+
+              if (( attempt == 5 )); then
+                echo "Unable to determine whether $special_tag is published." >&2
+                exit 1
+              fi
+              sleep $((attempt * 3))
+            done
+
+            if [[ "$release_exists" == true ]]; then
+              echo "$special_tag is already published; sync only."
+              should_release=false
+            fi
           fi
 
           {
@@ -339,12 +387,38 @@ jobs:
             echo "> APK 未签名，必须自行签名后才能安装。"
           } > "$notes_file"
 
-          if gh release view "${{ needs.sync.outputs.special_tag }}" \
-            --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          special_tag="${{ needs.sync.outputs.special_tag }}"
+          release_exists=false
+          release_error="$RUNNER_TEMP/release-lookup-error.txt"
+          for attempt in 1 2 3 4 5; do
+            release_candidate=""
+            if release_candidate="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/${special_tag}" \
+              --jq '.tag_name // empty' 2>"$release_error")"; then
+              if [[ "$release_candidate" == "$special_tag" ]]; then
+                release_exists=true
+                break
+              fi
+              echo "Release lookup attempt ${attempt}/5 returned an invalid tag." >&2
+            elif grep -Fq '(HTTP 404)' "$release_error"; then
+              break
+            else
+              echo "Release lookup attempt ${attempt}/5 failed:" >&2
+              sed -n '1,5p' "$release_error" >&2
+            fi
+
+            if (( attempt == 5 )); then
+              echo "Unable to determine whether $special_tag already exists." >&2
+              exit 1
+            fi
+            sleep $((attempt * 3))
+          done
+
+          if [[ "$release_exists" == true ]]; then
             echo "Release already exists; nothing to publish."
             exit 0
           fi
-          gh release create "${{ needs.sync.outputs.special_tag }}" "$apk_path" \
+          gh release create "$special_tag" "$apk_path" \
             --repo "$GITHUB_REPOSITORY" \
             --target "${{ needs.sync.outputs.source_sha }}" \
             --title "CMFA 特供版 ${{ needs.sync.outputs.upstream_tag }}" \
