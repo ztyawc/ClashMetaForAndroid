@@ -52,7 +52,7 @@ jobs:
           else
             git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
           fi
-          git fetch upstream main --tags
+          git fetch --no-tags upstream main
 
           set +e
           git merge --no-edit upstream/main
