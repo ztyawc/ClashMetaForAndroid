@@ -66,7 +66,11 @@ jobs:
                 .github/workflows/build-debug.yaml|\
                 .github/workflows/build-pre-release.yaml|\
                 .github/workflows/build-release.yaml|\
-                .github/workflows/update-dependencies.yaml)
+                .github/workflows/update-dependencies.yaml|\
+                core/src/foss/golang/go.mod|\
+                core/src/foss/golang/go.sum|\
+                core/src/main/golang/go.mod|\
+                core/src/main/golang/go.sum)
                   ;;
                 *)
                   echo "Manual merge required for: $conflicted_path" >&2
@@ -78,6 +82,18 @@ jobs:
             if git diff --name-only --diff-filter=U | grep -Fxq .gitmodules; then
               git checkout --ours -- .gitmodules
             fi
+            for generated_module_file in \
+              core/src/foss/golang/go.mod \
+              core/src/foss/golang/go.sum \
+              core/src/main/golang/go.mod \
+              core/src/main/golang/go.sum; do
+              if git diff --name-only --diff-filter=U | \
+                grep -Fxq "$generated_module_file"; then
+                # The next step regenerates these files from the selected custom kernel.
+                git checkout --ours -- "$generated_module_file"
+                git add "$generated_module_file"
+              fi
+            done
             git rm -f --ignore-unmatch \
               .github/workflows/build-debug.yaml \
               .github/workflows/build-pre-release.yaml \
