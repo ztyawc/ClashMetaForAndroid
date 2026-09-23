@@ -22,6 +22,12 @@ APK 仅通过 [GitHub Releases](../../releases) 发布，不提交到 Git 历史
 
 如果上游改动与特供版定制发生 Git 冲突，同步会失败并保留日志，需要手动解决后再重跑。
 
+## 预发布版
+
+在 Actions 中手动运行 `Sync upstream and release special APK` 并勾选 `prerelease`（或执行 `gh workflow run sync-upstream-release.yml -f prerelease=true`），会先完成一次同步，再用 `main` 的最新代码和 `ztyawc/mihomo` 的最新内核构建 APK，发布为预发布版 `special-Prerelease-alpha`。每次发布都会替换上一个预发布版。
+
+预发布版与正式特供版包名相同，安装会覆盖正式版。
+
 ## 手动构建
 
 需要 Java 21、Go 1.26、Android SDK 35、NDK `29.0.14206865` 和 CMake `3.22.1`。

@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "23 */3 * * *"
   workflow_dispatch:
+    inputs:
+      prerelease:
+        description: Build main and replace the special-Prerelease-alpha prerelease
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -24,11 +29,15 @@ jobs:
     permissions:
       contents: write
     outputs:
+      apk_name: ${{ steps.release.outputs.apk_name }}
       app_version: ${{ steps.release.outputs.app_version }}
       kernel_sha: ${{ steps.release.outputs.kernel_sha }}
+      release_kind: ${{ steps.release.outputs.release_kind }}
+      release_title: ${{ steps.release.outputs.release_title }}
       should_release: ${{ steps.release.outputs.should_release }}
       source_sha: ${{ steps.release.outputs.source_sha }}
       special_tag: ${{ steps.release.outputs.special_tag }}
+      upstream_sha: ${{ steps.release.outputs.upstream_sha }}
       upstream_tag: ${{ steps.release.outputs.upstream_tag }}
     steps:
       - name: Checkout special edition
@@ -123,8 +132,11 @@ jobs:
             git commit --no-edit
           fi
 
-          echo "KERNEL_SHA=$kernel_sha" >> "$GITHUB_ENV"
-          echo "KERNEL_SHORT_SHA=${kernel_sha:0:12}" >> "$GITHUB_ENV"
+          {
+            echo "KERNEL_SHA=$kernel_sha"
+            echo "KERNEL_SHORT_SHA=${kernel_sha:0:12}"
+            echo "UPSTREAM_SHA=$(git rev-parse upstream/main)"
+          } >> "$GITHUB_ENV"
 
       - name: Setup Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
@@ -173,8 +185,30 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ inputs.prerelease == true }}
         run: |
           set -euo pipefail
+          app_version="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' \
+            build.gradle.kts | head -n1)"
+          source_sha="$(git rev-parse HEAD)"
+
+          if [[ "$PRERELEASE" == true ]]; then
+            # A manual prerelease always builds the synchronized main, whatever
+            # the latest upstream stable release is.
+            {
+              echo "apk_name=CMFA-${app_version}-prerelease-${source_sha:0:8}-ztyawc-special-arm64-v8a-unsigned"
+              echo "app_version=$app_version"
+              echo "kernel_sha=$KERNEL_SHA"
+              echo "release_kind=prerelease"
+              echo "release_title=CMFA 特供版 Prerelease-alpha"
+              echo "should_release=true"
+              echo "source_sha=$source_sha"
+              echo "special_tag=special-Prerelease-alpha"
+              echo "upstream_sha=$UPSTREAM_SHA"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           upstream_tag=""
           for attempt in 1 2 3 4 5; do
             candidate=""
@@ -196,10 +230,7 @@ jobs:
             exit 1
           fi
 
-          app_version="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' \
-            build.gradle.kts | head -n1)"
           special_tag="special-${upstream_tag}"
-          source_sha="$(git rev-parse HEAD)"
           should_release=true
 
           if [[ "v${app_version}" != "$upstream_tag" ]]; then
@@ -239,11 +270,15 @@ jobs:
           fi
 
           {
+            echo "apk_name=CMFA-${app_version}-ztyawc-special-arm64-v8a-unsigned"
             echo "app_version=$app_version"
             echo "kernel_sha=$KERNEL_SHA"
+            echo "release_kind=stable"
+            echo "release_title=CMFA 特供版 ${upstream_tag}"
             echo "should_release=$should_release"
             echo "source_sha=$source_sha"
             echo "special_tag=$special_tag"
+            echo "upstream_sha=$UPSTREAM_SHA"
             echo "upstream_tag=$upstream_tag"
           } >> "$GITHUB_OUTPUT"
 
@@ -355,14 +390,14 @@ jobs:
           unzip -t "$source_apk" >/dev/null
 
           mkdir -p dist
-          output_apk="dist/CMFA-${{ needs.sync.outputs.app_version }}-ztyawc-special-arm64-v8a-unsigned.apk"
+          output_apk="dist/${{ needs.sync.outputs.apk_name }}.apk"
           cp -f "$source_apk" "$output_apk"
           sha256sum "$output_apk"
 
       - name: Upload verified APK
         uses: actions/upload-artifact@v7
         with:
-          name: CMFA-${{ needs.sync.outputs.app_version }}-ztyawc-special-arm64-v8a-unsigned
+          name: ${{ needs.sync.outputs.apk_name }}
           path: dist/*.apk
           if-no-files-found: error
           compression-level: 0
@@ -379,12 +414,19 @@ jobs:
       - name: Download verified APK
         uses: actions/download-artifact@v8
         with:
-          name: CMFA-${{ needs.sync.outputs.app_version }}-ztyawc-special-arm64-v8a-unsigned
+          name: ${{ needs.sync.outputs.apk_name }}
           path: dist
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          KERNEL_SHA: ${{ needs.sync.outputs.kernel_sha }}
+          RELEASE_KIND: ${{ needs.sync.outputs.release_kind }}
+          RELEASE_TITLE: ${{ needs.sync.outputs.release_title }}
+          SOURCE_SHA: ${{ needs.sync.outputs.source_sha }}
+          SPECIAL_TAG: ${{ needs.sync.outputs.special_tag }}
+          UPSTREAM_SHA: ${{ needs.sync.outputs.upstream_sha }}
+          UPSTREAM_TAG: ${{ needs.sync.outputs.upstream_tag }}
         run: |
           set -euo pipefail
           apk_path="$(find dist -maxdepth 1 -type f -name '*.apk' -print -quit)"
@@ -392,18 +434,29 @@ jobs:
           checksum="$(sha256sum "$apk_path" | awk '{print $1}')"
           notes_file="$RUNNER_TEMP/release-notes.md"
           {
-            echo "Clash Meta for Android（特供版）"
-            echo
-            echo "- CMFA 上游版本：\`${{ needs.sync.outputs.upstream_tag }}\`"
-            echo "- 魔改内核：\`${KERNEL_REPOSITORY}@${{ needs.sync.outputs.kernel_sha }}\`"
+            if [[ "$RELEASE_KIND" == prerelease ]]; then
+              echo "Clash Meta for Android（特供版）预发布版"
+              echo
+              echo "- 源码：\`${GITHUB_REPOSITORY}@${SOURCE_SHA}\`"
+              echo "- CMFA 上游 main：\`${UPSTREAM_REPOSITORY}@${UPSTREAM_SHA}\`"
+            else
+              echo "Clash Meta for Android（特供版）"
+              echo
+              echo "- CMFA 上游版本：\`${UPSTREAM_TAG}\`"
+            fi
+            echo "- 魔改内核：\`${KERNEL_REPOSITORY}@${KERNEL_SHA}\`"
             echo "- 包名：\`${PACKAGE_ID}\`"
             echo "- ABI：\`arm64-v8a\`"
             echo "- SHA-256：\`${checksum}\`"
             echo
+            if [[ "$RELEASE_KIND" == prerelease ]]; then
+              echo "> 预发布版基于 main 的最新代码构建，未经上游正式发布；与正式特供版包名相同，安装会覆盖正式版。"
+              echo ">"
+            fi
             echo "> APK 未签名，必须自行签名后才能安装。"
           } > "$notes_file"
 
-          special_tag="${{ needs.sync.outputs.special_tag }}"
+          special_tag="$SPECIAL_TAG"
           release_exists=false
           release_error="$RUNNER_TEMP/release-lookup-error.txt"
           for attempt in 1 2 3 4 5; do
@@ -430,12 +483,24 @@ jobs:
             sleep $((attempt * 3))
           done
 
-          if [[ "$release_exists" == true ]]; then
+          prerelease_flags=()
+          if [[ "$RELEASE_KIND" == prerelease ]]; then
+            # Like upstream's Prerelease-alpha, each prerelease replaces the previous one.
+            if [[ "$release_exists" == true ]]; then
+              gh release delete "$special_tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            fi
+            # A leftover tag would make the new release ignore --target.
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${special_tag}" >/dev/null 2>&1; then
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${special_tag}"
+            fi
+            prerelease_flags=(--prerelease)
+          elif [[ "$release_exists" == true ]]; then
             echo "Release already exists; nothing to publish."
             exit 0
           fi
           gh release create "$special_tag" "$apk_path" \
             --repo "$GITHUB_REPOSITORY" \
-            --target "${{ needs.sync.outputs.source_sha }}" \
-            --title "CMFA 特供版 ${{ needs.sync.outputs.upstream_tag }}" \
-            --notes-file "$notes_file"
+            --target "$SOURCE_SHA" \
+            --title "$RELEASE_TITLE" \
+            --notes-file "$notes_file" \
+            "${prerelease_flags[@]}"
