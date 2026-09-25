@@ -1,0 +1,196 @@
+name: Build special APK with custom kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repository:
+        description: GitHub repository of the mihomo kernel to build with
+        type: string
+        default: ztyawc/mihomo-cn2
+      kernel_branch:
+        description: Kernel branch
+        type: string
+        default: main
+
+permissions: {}
+
+concurrency:
+  group: build-custom-kernel
+  cancel-in-progress: false
+
+env:
+  PACKAGE_ID: com.github.metacubex.clash.ztyawc
+  KERNEL_PATH: core/src/foss/golang/clash
+
+jobs:
+  build:
+    name: Build and verify unsigned arm64 APK
+    runs-on: ubuntu-latest
+    # Read-only on purpose: the kernel swap and go.mod changes stay on the
+    # runner, and the APK is only kept as a workflow artifact.
+    permissions:
+      contents: read
+    env:
+      KERNEL_REPOSITORY: ${{ inputs.kernel_repository }}
+      KERNEL_BRANCH: ${{ inputs.kernel_branch }}
+    steps:
+      - name: Checkout special edition
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: false
+
+      - name: Checkout custom kernel
+        run: |
+          set -euo pipefail
+          [[ "$KERNEL_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          [[ "$KERNEL_BRANCH" =~ ^[A-Za-z0-9_./-]+$ ]]
+
+          git config -f .gitmodules submodule.clash-foss.url \
+            "https://github.com/${KERNEL_REPOSITORY}"
+          git config -f .gitmodules submodule.clash-foss.branch "$KERNEL_BRANCH"
+
+          kernel_sha="$(git ls-remote "https://github.com/${KERNEL_REPOSITORY}.git" \
+            "refs/heads/${KERNEL_BRANCH}" | awk '{print $1}')"
+          test -n "$kernel_sha"
+          git update-index --add --cacheinfo "160000,$kernel_sha,$KERNEL_PATH"
+          git submodule sync -- "$KERNEL_PATH"
+          git submodule update --init --force "$KERNEL_PATH"
+          git -C "$KERNEL_PATH" fetch origin \
+            "+${KERNEL_BRANCH}:refs/remotes/origin/${KERNEL_BRANCH}"
+          git -C "$KERNEL_PATH" checkout --detach "$kernel_sha"
+          test "$(git -C "$KERNEL_PATH" rev-parse HEAD)" = "$kernel_sha"
+
+          app_version="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' \
+            build.gradle.kts | head -n1)"
+          {
+            echo "APP_VERSION=$app_version"
+            echo "KERNEL_SHA=$kernel_sha"
+            echo "APK_NAME=CMFA-${app_version}-${KERNEL_REPOSITORY#*/}-${kernel_sha:0:8}-arm64-v8a-unsigned"
+          } >> "$GITHUB_ENV"
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
+          go-version: "1.26"
+          # No shared module cache: this job builds an arbitrary kernel, and the
+          # sync workflow's write-access job restores caches under the same key.
+          cache: false
+
+      - name: Synchronize Go module dependencies
+        run: |
+          set -euo pipefail
+          go install github.com/metacubex/update-go-mod-replace@v0.0.0-20240524042313-f782cd79bccf
+
+          for module_dir in core/src/foss/golang core/src/main/golang; do
+            pushd "$module_dir" >/dev/null
+            update-go-mod-replace "$GITHUB_WORKSPACE/$KERNEL_PATH/go.mod" "$PWD/go.mod"
+            go mod tidy
+            popd >/dev/null
+          done
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Install Android native toolchain
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;35.0.0" \
+            "ndk;29.0.14206865" "cmake;3.22.1"
+
+      - name: Apply CMFA Go runtime patches
+        run: |
+          set -euo pipefail
+          for patch_file in "$GITHUB_WORKSPACE"/.github/patch/*.patch; do
+            patch --verbose -d "$(go env GOROOT)" -p1 < "$patch_file"
+          done
+
+      - name: Prepare reproducible build inputs
+        run: |
+          set -euo pipefail
+          cp -f /etc/ssl/certs/ca-certificates.crt \
+            "$KERNEL_PATH/component/ca/ca-certificates.crt"
+          {
+            echo "sdk.dir=${ANDROID_HOME}"
+            echo "custom.application.id=${PACKAGE_ID}"
+            echo "remove.suffix=true"
+          } > local.properties
+
+      - name: Test custom mihomo kernel
+        working-directory: core/src/foss/golang/clash
+        run: |
+          set -euo pipefail
+          # Only the custom outbounds; kernels without one of them skip it.
+          packages=()
+          for package_dir in transport/qyproxy transport/socks5 adapter/outbound; do
+            if [[ -d "$package_dir" ]]; then
+              packages+=("./$package_dir")
+            fi
+          done
+          go test -tags with_gvisor "${packages[@]}"
+
+      - name: Build unsigned arm64 Meta APK
+        run: >-
+          ./gradlew --no-daemon app:assembleMetaRelease
+          -Pandroid.injected.build.abi=arm64-v8a
+
+      - name: Verify and stage APK
+        run: |
+          set -euo pipefail
+          source_apk="$(find app/build -type f -path '*/apk/*' \
+            -name '*arm64-v8a*release-unsigned.apk' -print -quit)"
+          test -n "$source_apk"
+
+          aapt="$ANDROID_HOME/build-tools/35.0.0/aapt"
+          apksigner="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          "$aapt" dump badging "$source_apk" | grep -F "package: name='${PACKAGE_ID}'"
+          "$aapt" dump badging "$source_apk" | \
+            grep -F "application-label:'Clash Meta for Android（特供版）'"
+          test "$(unzip -Z1 "$source_apk" | awk -F/ '/^lib\// {print $2}' | sort -u)" = \
+            "arm64-v8a"
+          unzip -Z1 "$source_apk" | grep -Fx 'lib/arm64-v8a/libclash.so'
+          unzip -Z1 "$source_apk" | grep -Fx 'lib/arm64-v8a/libbridge.so'
+          unzip -p "$source_apk" lib/arm64-v8a/libbridge.so | strings | \
+            grep -F "${KERNEL_SHA:0:7}"
+          if "$apksigner" verify --verbose "$source_apk"; then
+            echo "APK unexpectedly contains a signature" >&2
+            exit 1
+          fi
+          if unzip -Z1 "$source_apk" | grep -Eq '^META-INF/[^/]+\.(RSA|DSA|EC|SF)$'; then
+            echo "APK unexpectedly contains a JAR signature" >&2
+            exit 1
+          fi
+          unzip -t "$source_apk" >/dev/null
+
+          mkdir -p dist
+          output_apk="dist/${APK_NAME}.apk"
+          cp -f "$source_apk" "$output_apk"
+          checksum="$(sha256sum "$output_apk" | awk '{print $1}')"
+          echo "$checksum  $output_apk"
+          {
+            echo "### ${APK_NAME}.apk"
+            echo
+            echo "- 源码：\`${GITHUB_REPOSITORY}@${GITHUB_SHA}\`"
+            echo "- 内核：\`${KERNEL_REPOSITORY}@${KERNEL_SHA}\`"
+            echo "- 包名：\`${PACKAGE_ID}\`（与正式特供版相同，安装会覆盖）"
+            echo "- SHA-256：\`${checksum}\`"
+            echo
+            echo "APK 未签名，必须自行签名后才能安装；仅保存为本次运行的构件，不发布 Release。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verified APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APK_NAME }}
+          path: dist/*.apk
+          if-no-files-found: error
+          compression-level: 0

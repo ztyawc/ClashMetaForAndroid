@@ -28,6 +28,16 @@ APK 仅通过 [GitHub Releases](../../releases) 发布，不提交到 Git 历史
 
 预发布版与正式特供版包名相同，安装会覆盖正式版。
 
+## 自定义内核构建
+
+`.github/workflows/build-custom-kernel.yml` 用 `main` 的最新代码和指定的 mihomo 内核仓库（默认 `ztyawc/mihomo-cn2` 的 `main`）构建 arm64 未签名 APK：
+
+```bash
+gh workflow run build-custom-kernel.yml -f kernel_repository=ztyawc/mihomo-cn2
+```
+
+内核替换只发生在构建机上，不会推送代码，也不会发布 Release。APK 仅作为该次运行的构件（artifact）保存，在运行页面下载。包名与正式特供版相同，安装会覆盖。
+
 ## 手动构建
 
 需要 Java 21、Go 1.26、Android SDK 35、NDK `29.0.14206865` 和 CMake `3.22.1`。
