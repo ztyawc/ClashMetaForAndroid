@@ -1,6 +1,6 @@
 # Clash Meta for Android（特供版）
 
-本仓库是 [MetaCubeX/ClashMetaForAndroid](https://github.com/MetaCubeX/ClashMetaForAndroid) 的自动同步分支，内置 [ztyawc/mihomo](https://github.com/ztyawc/mihomo) 魔改内核。
+本仓库是 [MetaCubeX/ClashMetaForAndroid](https://github.com/MetaCubeX/ClashMetaForAndroid) 的自动同步分支，内置 [ztyawc/mihomo-cn2](https://github.com/ztyawc/mihomo-cn2) 魔改内核。
 
 ## 产物
 
@@ -16,7 +16,7 @@ APK 仅通过 [GitHub Releases](../../releases) 发布，不提交到 Git 历史
 `.github/workflows/sync-upstream-release.yml` 每 3 小时运行一次：
 
 1. 合并 `MetaCubeX/ClashMetaForAndroid` 的最新 `main`，保持应用层与上游同步。
-2. 将内核子模块更新到 `ztyawc/mihomo` 的最新 `main`。
+2. 将内核子模块更新到 `ztyawc/mihomo-cn2` 的最新 `main`。
 3. 同步 Go 模块依赖并把变更推送到本仓库 `main`。
 4. 当上游出现尚未镜像的稳定 Release 时，构建、校验并发布新的 arm64 未签名 APK。
 
@@ -24,7 +24,7 @@ APK 仅通过 [GitHub Releases](../../releases) 发布，不提交到 Git 历史
 
 ## 预发布版
 
-在 Actions 中手动运行 `Sync upstream and release special APK` 并勾选 `prerelease`（或执行 `gh workflow run sync-upstream-release.yml -f prerelease=true`），会先完成一次同步，再用 `main` 的最新代码和 `ztyawc/mihomo` 的最新内核构建 APK，发布为预发布版 `special-Prerelease-alpha`。每次发布都会替换上一个预发布版。
+在 Actions 中手动运行 `Sync upstream and release special APK` 并勾选 `prerelease`（或执行 `gh workflow run sync-upstream-release.yml -f prerelease=true`），会先完成一次同步，再用 `main` 的最新代码和 `ztyawc/mihomo-cn2` 的最新内核构建 APK，发布为预发布版 `special-Prerelease-alpha`。每次发布都会替换上一个预发布版。
 
 预发布版与正式特供版包名相同，安装会覆盖正式版。
 

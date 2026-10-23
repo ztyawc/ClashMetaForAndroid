@@ -18,7 +18,7 @@ concurrency:
 
 env:
   UPSTREAM_REPOSITORY: MetaCubeX/ClashMetaForAndroid
-  KERNEL_REPOSITORY: ztyawc/mihomo
+  KERNEL_REPOSITORY: ztyawc/mihomo-cn2
   PACKAGE_ID: com.github.metacubex.clash.ztyawc
   KERNEL_PATH: core/src/foss/golang/clash
 
@@ -170,7 +170,7 @@ jobs:
             core/src/foss/golang/go.mod core/src/foss/golang/go.sum \
             core/src/main/golang/go.mod core/src/main/golang/go.sum
           if ! git diff --cached --quiet; then
-            git commit -m "chore: update ztyawc mihomo to ${KERNEL_SHORT_SHA}"
+            git commit -m "chore: update ${KERNEL_REPOSITORY} to ${KERNEL_SHORT_SHA}"
           fi
 
       - name: Push synchronized sources
@@ -352,7 +352,7 @@ jobs:
 
       - name: Test custom mihomo kernel
         working-directory: core/src/foss/golang/clash
-        run: go test -tags with_gvisor ./transport/socks5 ./adapter/outbound
+        run: go test -tags with_gvisor ./transport/qyproxy ./transport/socks5 ./adapter/outbound
 
       - name: Build unsigned arm64 Meta APK
         run: >-

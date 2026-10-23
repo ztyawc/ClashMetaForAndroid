@@ -1,4 +1,4 @@
 [submodule "clash-foss"]
 	path = core/src/foss/golang/clash
-	url = https://github.com/ztyawc/mihomo
+	url = https://github.com/ztyawc/mihomo-cn2
 	branch = main
