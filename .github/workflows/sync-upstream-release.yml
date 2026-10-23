@@ -196,7 +196,7 @@ jobs:
             # A manual prerelease always builds the synchronized main, whatever
             # the latest upstream stable release is.
             {
-              echo "apk_name=CMFA-${app_version}-prerelease-${source_sha:0:8}-ztyawc-special-arm64-v8a-unsigned"
+              echo "apk_name=CMFA-${app_version}-prerelease-${source_sha:0:8}-ztyawc-special-arm64-v8a"
               echo "app_version=$app_version"
               echo "kernel_sha=$KERNEL_SHA"
               echo "release_kind=prerelease"
@@ -270,7 +270,7 @@ jobs:
           fi
 
           {
-            echo "apk_name=CMFA-${app_version}-ztyawc-special-arm64-v8a-unsigned"
+            echo "apk_name=CMFA-${app_version}-ztyawc-special-arm64-v8a"
             echo "app_version=$app_version"
             echo "kernel_sha=$KERNEL_SHA"
             echo "release_kind=stable"
@@ -390,36 +390,53 @@ jobs:
           unzip -t "$source_apk" >/dev/null
 
           mkdir -p dist
-          output_apk="dist/${{ needs.sync.outputs.apk_name }}.apk"
+          output_apk="dist/${{ needs.sync.outputs.apk_name }}-unsigned.apk"
           cp -f "$source_apk" "$output_apk"
           sha256sum "$output_apk"
 
-      - name: Upload verified APK
+      - name: Upload verified unsigned APK for signing
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ needs.sync.outputs.apk_name }}
+          name: ${{ needs.sync.outputs.apk_name }}-unsigned
           path: dist/*.apk
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
+
+  sign:
+    name: Sign with fixed release certificate
+    needs:
+      - sync
+      - build
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sign-apk.yml
+    with:
+      apk_name: ${{ needs.sync.outputs.apk_name }}
+    secrets:
+      CMFA_RELEASE_KEYSTORE_BASE64: ${{ secrets.CMFA_RELEASE_KEYSTORE_BASE64 }}
+      CMFA_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.CMFA_RELEASE_KEYSTORE_PASSWORD }}
 
   release:
     name: Publish GitHub Release
     needs:
       - sync
       - build
+      - sign
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download verified APK
+      - name: Download verified signed APK
         uses: actions/download-artifact@v8
         with:
-          name: ${{ needs.sync.outputs.apk_name }}
+          name: ${{ needs.sync.outputs.apk_name }}-signed
           path: dist
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          CERTIFICATE_SHA256: ${{ needs.sign.outputs.certificate_sha256 }}
           KERNEL_SHA: ${{ needs.sync.outputs.kernel_sha }}
           RELEASE_KIND: ${{ needs.sync.outputs.release_kind }}
           RELEASE_TITLE: ${{ needs.sync.outputs.release_title }}
@@ -447,13 +464,14 @@ jobs:
             echo "- 魔改内核：\`${KERNEL_REPOSITORY}@${KERNEL_SHA}\`"
             echo "- 包名：\`${PACKAGE_ID}\`"
             echo "- ABI：\`arm64-v8a\`"
+            echo "- 固定签名证书 SHA-256：\`${CERTIFICATE_SHA256}\`"
             echo "- SHA-256：\`${checksum}\`"
             echo
             if [[ "$RELEASE_KIND" == prerelease ]]; then
-              echo "> 预发布版基于 main 的最新代码构建，未经上游正式发布；与正式特供版包名相同，安装会覆盖正式版。"
+              echo "> 预发布版基于 main 的最新代码构建，未经上游正式发布；与同包名、同签名证书的版本可以覆盖升级。"
               echo ">"
             fi
-            echo "> APK 未签名，必须自行签名后才能安装。"
+            echo "> APK 已使用固定发布证书签名，可直接安装；后续版本继续使用同一证书。"
           } > "$notes_file"
 
           special_tag="$SPECIAL_TAG"

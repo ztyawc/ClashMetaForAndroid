@@ -1,0 +1,124 @@
+name: Sign APK with the fixed release certificate
+
+on:
+  workflow_call:
+    inputs:
+      apk_name:
+        description: APK base name without the unsigned or signed suffix
+        required: true
+        type: string
+    secrets:
+      CMFA_RELEASE_KEYSTORE_BASE64:
+        required: true
+      CMFA_RELEASE_KEYSTORE_PASSWORD:
+        required: true
+    outputs:
+      certificate_sha256:
+        description: Verified release signing certificate fingerprint
+        value: ${{ jobs.sign.outputs.certificate_sha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    name: Sign and verify APK
+    runs-on: ubuntu-latest
+    env:
+      BUILD_TOOLS_VERSION: "35.0.0"
+    outputs:
+      certificate_sha256: ${{ steps.sign.outputs.certificate_sha256 }}
+    steps:
+      - name: Checkout pinned public certificate
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/signing
+
+      - name: Download verified unsigned APK
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.apk_name }}-unsigned
+          path: unsigned
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install APK signing tools
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;${BUILD_TOOLS_VERSION}"
+
+      # Signing runs on a clean runner, without executing kernel or Gradle code.
+      - name: Sign using the fixed release key and verify certificate
+        id: sign
+        env:
+          APK_NAME: ${{ inputs.apk_name }}
+          KEYSTORE_BASE64: ${{ secrets.CMFA_RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CMFA_RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$APK_NAME" =~ ^[A-Za-z0-9._-]+$ ]]
+          test -n "$KEYSTORE_BASE64"
+          test -n "$KEYSTORE_PASSWORD"
+          source_apk="unsigned/${APK_NAME}-unsigned.apk"
+          test -f "$source_apk"
+
+          signing_dir="$RUNNER_TEMP/cmfa-signing"
+          mkdir -p "$signing_dir" dist
+          trap 'rm -f "$signing_dir/release.keystore"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$signing_dir/release.keystore"
+
+          expected_sha="$(openssl x509 -in .github/signing/release-certificate.pem \
+            -outform DER | sha256sum | awk '{print $1}')"
+          keytool -exportcert -keystore "$signing_dir/release.keystore" \
+            -alias cmfa-release -storepass:env KEYSTORE_PASSWORD \
+            -file "$signing_dir/actual-certificate.der"
+          actual_sha="$(sha256sum "$signing_dir/actual-certificate.der" | awk '{print $1}')"
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "Keystore does not match the pinned release certificate." >&2
+            exit 1
+          fi
+
+          zipalign="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/zipalign"
+          apksigner="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner"
+          "$zipalign" -P 16 -f 4 "$source_apk" "$signing_dir/aligned.apk"
+          output_apk="dist/${APK_NAME}-signed.apk"
+          "$apksigner" sign --ks "$signing_dir/release.keystore" \
+            --ks-key-alias cmfa-release \
+            --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEYSTORE_PASSWORD \
+            --v1-signing-enabled true --v2-signing-enabled true \
+            --v3-signing-enabled true --v4-signing-enabled false \
+            --out "$output_apk" "$signing_dir/aligned.apk"
+          "$apksigner" verify --verbose --print-certs "$output_apk" | \
+            tee "$signing_dir/verification.txt"
+          grep -Fx 'Number of signers: 1' "$signing_dir/verification.txt"
+          grep -Fx 'Verified using v1 scheme (JAR signing): true' "$signing_dir/verification.txt"
+          grep -Fx 'Verified using v2 scheme (APK Signature Scheme v2): true' \
+            "$signing_dir/verification.txt"
+          signer_sha="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' \
+            "$signing_dir/verification.txt")"
+          test "$signer_sha" = "$expected_sha"
+          "$zipalign" -c -P 16 4 "$output_apk"
+          echo "certificate_sha256=$signer_sha" >> "$GITHUB_OUTPUT"
+          checksum="$(sha256sum "$output_apk" | awk '{print $1}')"
+          {
+            echo "### ${APK_NAME}-signed.apk"
+            echo
+            echo "- 固定签名证书 SHA-256：\`${signer_sha}\`"
+            echo "- APK SHA-256：\`${checksum}\`"
+            echo
+            echo "已使用固定发布证书签名，可直接安装。请下载 signed 构件。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.apk_name }}-signed
+          path: dist/*-signed.apk
+          if-no-files-found: error
+          compression-level: 0

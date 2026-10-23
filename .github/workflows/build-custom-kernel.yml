@@ -30,6 +30,8 @@ jobs:
     # runner, and the APK is only kept as a workflow artifact.
     permissions:
       contents: read
+    outputs:
+      apk_name: ${{ steps.kernel.outputs.apk_name }}
     env:
       KERNEL_REPOSITORY: ${{ inputs.kernel_repository }}
       KERNEL_BRANCH: ${{ inputs.kernel_branch }}
@@ -42,6 +44,7 @@ jobs:
           submodules: false
 
       - name: Checkout custom kernel
+        id: kernel
         run: |
           set -euo pipefail
           [[ "$KERNEL_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
@@ -64,11 +67,13 @@ jobs:
 
           app_version="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' \
             build.gradle.kts | head -n1)"
+          apk_name="CMFA-${app_version}-${KERNEL_REPOSITORY#*/}-${kernel_sha:0:8}-arm64-v8a"
           {
             echo "APP_VERSION=$app_version"
             echo "KERNEL_SHA=$kernel_sha"
-            echo "APK_NAME=CMFA-${app_version}-${KERNEL_REPOSITORY#*/}-${kernel_sha:0:8}-arm64-v8a-unsigned"
+            echo "APK_NAME=$apk_name"
           } >> "$GITHUB_ENV"
+          echo "apk_name=$apk_name" >> "$GITHUB_OUTPUT"
 
       - name: Setup Java
         uses: actions/setup-java@v5
@@ -172,25 +177,38 @@ jobs:
           unzip -t "$source_apk" >/dev/null
 
           mkdir -p dist
-          output_apk="dist/${APK_NAME}.apk"
+          output_apk="dist/${APK_NAME}-unsigned.apk"
           cp -f "$source_apk" "$output_apk"
           checksum="$(sha256sum "$output_apk" | awk '{print $1}')"
           echo "$checksum  $output_apk"
           {
-            echo "### ${APK_NAME}.apk"
+            echo "### ${APK_NAME}-unsigned.apk（签名前的中间产物）"
             echo
             echo "- 源码：\`${GITHUB_REPOSITORY}@${GITHUB_SHA}\`"
             echo "- 内核：\`${KERNEL_REPOSITORY}@${KERNEL_SHA}\`"
             echo "- 包名：\`${PACKAGE_ID}\`（与正式特供版相同，安装会覆盖）"
             echo "- SHA-256：\`${checksum}\`"
             echo
-            echo "APK 未签名，必须自行签名后才能安装；仅保存为本次运行的构件，不发布 Release。"
+            echo "独立签名任务会使用固定发布证书签名；请下载 signed 构件。不发布 Release。"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload verified APK
+      - name: Upload verified unsigned APK for signing
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.APK_NAME }}
+          name: ${{ env.APK_NAME }}-unsigned
           path: dist/*.apk
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
+
+  sign:
+    name: Sign with fixed release certificate
+    needs: build
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sign-apk.yml
+    with:
+      apk_name: ${{ needs.build.outputs.apk_name }}
+    secrets:
+      CMFA_RELEASE_KEYSTORE_BASE64: ${{ secrets.CMFA_RELEASE_KEYSTORE_BASE64 }}
+      CMFA_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.CMFA_RELEASE_KEYSTORE_PASSWORD }}
