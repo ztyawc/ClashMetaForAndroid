@@ -1,8 +1,6 @@
 name: Sync upstream and release special APK
 
 on:
-  schedule:
-    - cron: "23 */3 * * *"
   workflow_dispatch:
     inputs:
       prerelease:
