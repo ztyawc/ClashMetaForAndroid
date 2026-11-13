@@ -50,6 +50,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Checkout latest custom kernel with read-only access
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KERNEL_REPOSITORY }}
+          ref: main
+          path: ${{ env.KERNEL_PATH }}
+          fetch-depth: 0
+          persist-credentials: false
+          ssh-key: ${{ secrets.CMFA_KERNEL_READ_SSH_KEY }}
+
       - name: Merge upstream and select latest custom kernel
         run: |
           set -euo pipefail
@@ -59,7 +69,7 @@ jobs:
           else
             git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
           fi
-          git fetch --no-tags upstream main
+          git fetch --no-tags --recurse-submodules=no upstream main
 
           set +e
           git merge --no-edit upstream/main
@@ -112,14 +122,9 @@ jobs:
             "https://github.com/${KERNEL_REPOSITORY}"
           git config -f .gitmodules submodule.clash-foss.branch main
 
-          kernel_sha="$(git ls-remote "https://github.com/${KERNEL_REPOSITORY}.git" \
-            refs/heads/main | awk '{print $1}')"
+          kernel_sha="$(git -C "$KERNEL_PATH" rev-parse HEAD)"
           test -n "$kernel_sha"
           git update-index --add --cacheinfo "160000,$kernel_sha,$KERNEL_PATH"
-          git submodule sync -- "$KERNEL_PATH"
-          git submodule update --init --force "$KERNEL_PATH"
-          git -C "$KERNEL_PATH" fetch origin +main:refs/remotes/origin/main
-          git -C "$KERNEL_PATH" checkout --detach "$kernel_sha"
 
           git add .gitmodules "$KERNEL_PATH"
           if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
@@ -297,12 +302,13 @@ jobs:
           submodules: false
 
       - name: Checkout custom kernel
-        run: |
-          set -euo pipefail
-          git submodule sync -- "$KERNEL_PATH"
-          git submodule update --init --force "$KERNEL_PATH"
-          git -C "$KERNEL_PATH" fetch origin +main:refs/remotes/origin/main
-          test "$(git -C "$KERNEL_PATH" rev-parse HEAD)" = "${{ needs.sync.outputs.kernel_sha }}"
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.KERNEL_REPOSITORY }}
+          ref: ${{ needs.sync.outputs.kernel_sha }}
+          path: ${{ env.KERNEL_PATH }}
+          persist-credentials: false
+          ssh-key: ${{ secrets.CMFA_KERNEL_READ_SSH_KEY }}
 
       - name: Setup Java
         uses: actions/setup-java@v5
@@ -350,7 +356,10 @@ jobs:
 
       - name: Test custom mihomo kernel
         working-directory: core/src/foss/golang/clash
-        run: go test -tags with_gvisor ./transport/qyproxy ./transport/socks5 ./adapter/outbound
+        run: >-
+          go test -tags with_gvisor
+          ./transport/qyproxy ./transport/socks5 ./transport/uusni
+          ./transport/vks6 ./adapter/outbound
 
       - name: Build unsigned arm64 Meta APK
         run: >-
@@ -458,6 +467,8 @@ jobs:
               echo "Clash Meta for Android（特供版）"
               echo
               echo "- CMFA 上游版本：\`${UPSTREAM_TAG}\`"
+              echo "- 源码：\`${GITHUB_REPOSITORY}@${SOURCE_SHA}\`"
+              echo "- CMFA 上游 main：\`${UPSTREAM_REPOSITORY}@${UPSTREAM_SHA}\`"
             fi
             echo "- 魔改内核：\`${KERNEL_REPOSITORY}@${KERNEL_SHA}\`"
             echo "- 包名：\`${PACKAGE_ID}\`"
@@ -513,6 +524,8 @@ jobs:
           elif [[ "$release_exists" == true ]]; then
             echo "Release already exists; nothing to publish."
             exit 0
+          else
+            prerelease_flags=(--latest)
           fi
           gh release create "$special_tag" "$apk_path" \
             --repo "$GITHUB_REPOSITORY" \

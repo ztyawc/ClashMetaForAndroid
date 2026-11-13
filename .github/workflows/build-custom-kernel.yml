@@ -43,7 +43,16 @@ jobs:
           persist-credentials: false
           submodules: false
 
-      - name: Checkout custom kernel
+      - name: Checkout custom kernel source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.kernel_repository }}
+          ref: ${{ inputs.kernel_branch }}
+          path: ${{ env.KERNEL_PATH }}
+          persist-credentials: false
+          ssh-key: ${{ inputs.kernel_repository == 'ztyawc/mihomo-cn2' && secrets.CMFA_KERNEL_READ_SSH_KEY || '' }}
+
+      - name: Select custom kernel
         id: kernel
         run: |
           set -euo pipefail
@@ -54,16 +63,9 @@ jobs:
             "https://github.com/${KERNEL_REPOSITORY}"
           git config -f .gitmodules submodule.clash-foss.branch "$KERNEL_BRANCH"
 
-          kernel_sha="$(git ls-remote "https://github.com/${KERNEL_REPOSITORY}.git" \
-            "refs/heads/${KERNEL_BRANCH}" | awk '{print $1}')"
+          kernel_sha="$(git -C "$KERNEL_PATH" rev-parse HEAD)"
           test -n "$kernel_sha"
           git update-index --add --cacheinfo "160000,$kernel_sha,$KERNEL_PATH"
-          git submodule sync -- "$KERNEL_PATH"
-          git submodule update --init --force "$KERNEL_PATH"
-          git -C "$KERNEL_PATH" fetch origin \
-            "+${KERNEL_BRANCH}:refs/remotes/origin/${KERNEL_BRANCH}"
-          git -C "$KERNEL_PATH" checkout --detach "$kernel_sha"
-          test "$(git -C "$KERNEL_PATH" rev-parse HEAD)" = "$kernel_sha"
 
           app_version="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' \
             build.gradle.kts | head -n1)"
@@ -136,7 +138,7 @@ jobs:
           set -euo pipefail
           # Only the custom outbounds; kernels without one of them skip it.
           packages=()
-          for package_dir in transport/qyproxy transport/socks5 adapter/outbound; do
+          for package_dir in transport/qyproxy transport/socks5 transport/uusni transport/vks6 adapter/outbound; do
             if [[ -d "$package_dir" ]]; then
               packages+=("./$package_dir")
             fi

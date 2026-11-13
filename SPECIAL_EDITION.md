@@ -13,7 +13,7 @@ APK 仅通过 [GitHub Releases](../../releases) 发布，不提交到 Git 历史
 
 ## 自动维护
 
-`.github/workflows/sync-upstream-release.yml` 每 3 小时运行一次：
+在 Actions 中手动运行 `.github/workflows/sync-upstream-release.yml`（默认发布正式版）：
 
 1. 合并 `MetaCubeX/ClashMetaForAndroid` 的最新 `main`，保持应用层与上游同步。
 2. 将内核子模块更新到 `ztyawc/mihomo-cn2` 的最新 `main`。
@@ -21,6 +21,8 @@ APK 仅通过 [GitHub Releases](../../releases) 发布，不提交到 Git 历史
 4. 当上游出现尚未镜像的稳定 Release 时，构建、校验、使用固定证书签名，并发布新的 arm64 APK。
 
 如果上游改动与特供版定制发生 Git 冲突，同步会失败并保留日志，需要手动解决后再重跑。
+
+`ztyawc/mihomo-cn2` 为私有仓库时，两个构建流程通过仓库 Secret `CMFA_KERNEL_READ_SSH_KEY` 读取内核源码。对应的部署密钥只授予该内核仓库的读取权限，源码检出后不保留凭据。
 
 ## 预发布版
 
