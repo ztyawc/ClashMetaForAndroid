@@ -22,8 +22,11 @@ execute_process(
 )
 string(REPLACE "\n" ";" CURRENT_BRANCH "${CURRENT_BRANCH}")
 list(GET CURRENT_BRANCH 1 CURRENT_BRANCH)
-string (REGEX REPLACE "origin/" "" CURRENT_BRANCH ${CURRENT_BRANCH})
-string (REGEX REPLACE "[\n\t\r]" "" CURRENT_BRANCH ${CURRENT_BRANCH})
+string (REGEX REPLACE "origin/" "" CURRENT_BRANCH "${CURRENT_BRANCH}")
+string (REGEX REPLACE "[\n\t\r]" "" CURRENT_BRANCH "${CURRENT_BRANCH}")
+if ("${CURRENT_BRANCH}" STREQUAL "")
+    set(CURRENT_BRANCH "detached")
+endif ()
 #string(SUBSTRING ${CURRENT_BRANCH} 0 8 CURRENT_BRANCH)
 message(STATUS "git current branch = ${CURRENT_BRANCH}")
 
